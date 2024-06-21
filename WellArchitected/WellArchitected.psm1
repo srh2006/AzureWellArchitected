@@ -498,14 +498,19 @@ function Get-WellArchitectedRecommendationsByID
         [string[]]
         $SubscriptionIds,
 
+        [Parameter(Mandatory)]
+        [ValidateScript({Test-Path $_})]
+        [string]
+        $GitHubRepoPath,
+
         [Parameter()]
         [string[]]
         $ResourceGroups
     )
 
     Write-Debug -Message "Get-WellArchitectedRecommendationsByID: START [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
+<#
     $ResourceTypes = @()
-
     if ($ResourceGroups)
     {
         foreach ($SubscriptionId in $SubscriptionIds)
@@ -520,11 +525,25 @@ function Get-WellArchitectedRecommendationsByID
             $ResourceTypes += Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId
         }
     }
-
-    foreach ($ResourceType in $ResourceTypes)
+#>
+    $KQLCollection = @()
+    foreach ($RecommendationId in $RecommendationIds)
     {
-
+        $KQLCollection += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
     }
+
+
+
+    if ($ResourceGroups)
+    {
+        $RecommendationResults = Start-ResourceExtraction -SubscriptionIds $SubscriptionIds -GitHubRepoPath $GitHubRepoPath -ResourceGroups $ResourceGroups
+    {
+    else 
+    {
+        $RecommendationResults = Start-ResourceExtraction -SubscriptionIds $SubscriptionIds -GitHubRepoPath $GitHubRepoPath
+    }    
+
+    $RecommendationResults | 
     
     Write-Debug -Message "Get-WellArchitectedRecommendationsByID: END [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
 }
@@ -541,5 +560,79 @@ function Compare-WellArchitectedRecommendations
         $NewRecommendations
     )
 
+function ConvertTo-WellArchitectedRecommendationsFromKQLPath
+{
+    [CmdletBinding()]
+    param 
+    (
+        [Parameter()]
+        [string[]]
+        $KQLFileFullPaths
+    )
+
+    $queries = @()
+    
+    # Populates the QueryMap hashtable
+    foreach ($KQLFileFullPath in $KQLFileFullPaths)
+    {
+        if ($ShellPlatform -eq 'Win32NT')
+        {
+            $kqlShort = [string]$KQLFileFullPath.split('\')[-1]
+        }
+        else
+        {
+            $kqlShort = [string]$KQLFileFullPath.split('/')[-1]
+        }
+
+        $kqlName = $kqlShort.split('.')[0]
+        $SplitDirectory = @()
+
+        # Read the query content from the file
+        $baseQuery = Get-Content -Path $KQLFileFullPath | Out-String
+        $ParentDirectory = Split-Path -Path $KQLFileFullPath -Parent
+        if ($ShellPlatform -eq 'Win32NT')
+        {
+            $SplitDirectory = $ParentDirectory.split('\')
+        }
+        else
+        {
+            $SplitDirectory = $ParentDirectory.split('/')
+        }
+
+        $kqltype = ('microsoft.' + $SplitDirectory[-3] + '/' + $SplitDirectory[-2])
+        $checkId = $kqlname.Split("/")[-1].ToLower()
+
+        $queries += `
+        [PSCustomObject]@{
+            checkId   = [string]$checkId
+            checkName = [string]$null
+            selector  = "APRL"
+            query     = [string]$baseQuery
+            type      = [string]$kqltype
+        }
+    }
+    
+    $ResourceResults = @()
+    foreach ($queryDef in $queries)
+    {
+        $checkId = $queryDef.checkId
+        $checkName = $queryDef.checkName
+        $query = $queryDef.query
+        $selector = $queryDef.selector
+        $type = $queryDef.type
+
+        Write-Host "++++++++++++++++++ " -NoNewline
+        if ($selector -eq 'APRL') 
+        {
+            Write-Host "[APRL]: Microsoft.$type - $checkId" -ForegroundColor Green -NoNewline
+        }
+        else 
+        {
+            Write-Host "[$selector]: $checkId" -ForegroundColor Green -NoNewline
+        }
+
+
+    }
 
 }
+
