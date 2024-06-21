@@ -67,7 +67,7 @@ function Test-Runbook
     }
 }
 
-function Invoke-QueryExecution 
+function Invoke-WellArchitectedKQLQuery
 {
     [CmdletBinding()]
     param
@@ -91,11 +91,11 @@ function Invoke-QueryExecution
 
     try
     {
-        Write-Debug -Message "Invoke-QueryExecution: Start [Type:$type][SubscriptionId:$SubscriptionId]"
+        Write-Debug -Message "Invoke-WellArchitectedKQLQuery: Start [Type:$type][SubscriptionId:$SubscriptionId]"
         $ResourceType = $ResourceDetails | Where-Object { $_.type -eq $type -and $_.subscriptionId -eq $SubscriptionId}
         if (-not [string]::IsNullOrEmpty($resourceType) -and $resourceType.count_ -lt 1000)
         {
-            Write-Debug -Message "Invoke-QueryExecution: Search-AzGraph Kickoff"
+            Write-Debug -Message "Invoke-WellArchitectedKQLQuery: Search-AzGraph Kickoff"
             # Execute the query and collect the results
             $queryResults = Search-AzGraph -Query $query -First 1000 -Subscription $SubscriptionId 
             $queryResults = $queryResults | Select -Property name,id,param1,param2,param3,param4,param5 -Unique
@@ -171,7 +171,7 @@ function Invoke-QueryExecution
 
             $QueryResultsCollection += $result
         }
-        Write-Debug -Message "Invoke-QueryExecution: End of Try Block"
+        Write-Debug -Message "Invoke-WellArchitectedKQLQuery: End of Try Block"
     }
     catch
     {
@@ -180,7 +180,7 @@ function Invoke-QueryExecution
         Write-Error "Error processing query results: $errorMessage"
     }
 
-    Write-Debug -Message "Invoke-QueryExecution: End"
+    Write-Debug -Message "Invoke-WellArchitectedKQLQuery: End"
     return $QueryResultsCollection
 }
 
@@ -406,7 +406,6 @@ function Start-ResourceExtraction
             $selector = $queryDef.selector
             $type = $queryDef.type
 
-            Write-Host "++++++++++++++++++ " -NoNewline
             if ($selector -eq 'APRL') 
             {
                 Write-Host "[APRL]: Microsoft.$type - $checkId" -ForegroundColor Green -NoNewline
@@ -415,25 +414,24 @@ function Start-ResourceExtraction
             {
                 Write-Host "[$selector]: $checkId" -ForegroundColor Green -NoNewline
             }
-            Write-Host " +++++++++++++++"
 
             # Validating if Query is Under Development
             if ($query -match "development")
             {
                 Write-Host "Query $checkId under development - Validate Recommendation manually" -ForegroundColor Yellow
                 $query = "resources | where type =~ '$type' | project name,id"
-                $ResourceResults += Invoke-QueryExecution -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
+                $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
             }
             elseif ($query -match "cannot-be-validated-with-arg")
             {
                 Write-Host "IMPORTANT - Recommendation $checkId cannot be validated with ARGs - Validate Resources manually" -ForegroundColor Yellow
                 $query = "resources | where type =~ '$type' | project name,id"
-                $ResourceResults += Invoke-QueryExecution -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
+                $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
             }
             else
             {
-                Write-Debug -Message "Start-ResourceExtraction: Invoking Invoke-QueryExecution - APRL Query"
-                $ResourceResults += Invoke-QueryExecution -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
+                Write-Debug -Message "Start-ResourceExtraction: Invoking Invoke-WellArchitectedKQLQuery - APRL Query"
+                $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
             }
         }
 
@@ -442,7 +440,7 @@ function Start-ResourceExtraction
         {
             Write-Host "Type $type Not Available In APRL - Validate Service manually" -ForegroundColor Yellow
             $query = "resources | where type =~ '$type' | project name,id"
-            $ResourceResults += Invoke-QueryExecution -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $type -checkName '' -validationAction 'IMPORTANT - Service Not Available In APRL - Validate Service manually if Applicable, if not Delete this line'
+            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $type -checkName '' -validationAction 'IMPORTANT - Service Not Available In APRL - Validate Service manually if Applicable, if not Delete this line'
         }
     }
     
@@ -509,39 +507,52 @@ function Get-WellArchitectedRecommendationsByID
     )
 
     Write-Debug -Message "Get-WellArchitectedRecommendationsByID: START [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
-<#
-    $ResourceTypes = @()
-    if ($ResourceGroups)
-    {
-        foreach ($SubscriptionId in $SubscriptionIds)
-        {
-            $ResourceTypes += Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId -ResourceGroups $ResourceGroups
-        }
-    }
-    else 
-    {
-        foreach ($SubscriptionId in $SubscriptionIds)
-        {
-            $ResourceTypes += Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId
-        }
-    }
-#>
+
     $KQLCollection = @()
     foreach ($RecommendationId in $RecommendationIds)
     {
         $KQLCollection += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
     }
 
+    $KQLQueries = ConvertTo-WellArchitectedQueriesFromKQLPath -KQLFileFullPaths $($KQLCollection.FullName)
+    
+    $RecommendationResults = @()
+    foreach ($queryDef in $KQLQueries)
+    {
+        $checkId = $queryDef.checkId
+        $checkName = $queryDef.checkName
+        $query = $queryDef.query
+        $selector = $queryDef.selector
+        $type = $queryDef.type
 
+        if ($selector -eq 'APRL') 
+        {
+            Write-Host "[APRL]: Microsoft.$type - $checkId" -ForegroundColor Green -NoNewline
+        }
+        else 
+        {
+            Write-Host "[$selector]: $checkId" -ForegroundColor Green -NoNewline
+        }
 
-    if ($ResourceGroups)
-    {
-        $RecommendationResults = Start-ResourceExtraction -SubscriptionIds $SubscriptionIds -GitHubRepoPath $GitHubRepoPath -ResourceGroups $ResourceGroups
-    {
-    else 
-    {
-        $RecommendationResults = Start-ResourceExtraction -SubscriptionIds $SubscriptionIds -GitHubRepoPath $GitHubRepoPath
-    }    
+        # Validating if Query is Under Development
+        if ($query -match "development")
+        {
+            Write-Host "Query $checkId under development - Validate Recommendation manually" -ForegroundColor Yellow
+            $query = "resources | where type =~ '$type' | project name,id"
+            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
+        }
+        elseif ($query -match "cannot-be-validated-with-arg")
+        {
+            Write-Host "IMPORTANT - Recommendation $checkId cannot be validated with ARGs - Validate Resources manually" -ForegroundColor Yellow
+            $query = "resources | where type =~ '$type' | project name,id"
+            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
+        }
+        else
+        {
+            Write-Debug -Message "Start-ResourceExtraction: Invoking Invoke-WellArchitectedKQLQuery - APRL Query"
+            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
+        }
+    }
 
     $RecommendationResults | 
     
@@ -559,8 +570,9 @@ function Compare-WellArchitectedRecommendations
         [Parameter(Mandatory)]
         $NewRecommendations
     )
+}
 
-function ConvertTo-WellArchitectedRecommendationsFromKQLPath
+function ConvertTo-WellArchitectedQueriesFromKQLPath
 {
     [CmdletBinding()]
     param 
@@ -571,17 +583,18 @@ function ConvertTo-WellArchitectedRecommendationsFromKQLPath
     )
 
     $queries = @()
+    $ShellPlatform = $PSVersionTable.Platform
     
     # Populates the QueryMap hashtable
     foreach ($KQLFileFullPath in $KQLFileFullPaths)
     {
         if ($ShellPlatform -eq 'Win32NT')
         {
-            $kqlShort = [string]$KQLFileFullPath.split('\')[-1]
+            [string]$kqlShort = $KQLFileFullPath.split('\')[-1]
         }
         else
         {
-            $kqlShort = [string]$KQLFileFullPath.split('/')[-1]
+            [string]$kqlShort = $KQLFileFullPath.split('/')[-1]
         }
 
         $kqlName = $kqlShort.split('.')[0]
@@ -592,15 +605,16 @@ function ConvertTo-WellArchitectedRecommendationsFromKQLPath
         $ParentDirectory = Split-Path -Path $KQLFileFullPath -Parent
         if ($ShellPlatform -eq 'Win32NT')
         {
-            $SplitDirectory = $ParentDirectory.split('\')
+            [string[]]$SplitDirectory = $ParentDirectory.split('\')
+            [string]$checkId = $kqlname.Split("\")[-1].ToLower()
         }
         else
         {
-            $SplitDirectory = $ParentDirectory.split('/')
+            [string[]]$SplitDirectory = $ParentDirectory.split('/')
+            [string]$checkId = $kqlname.Split("/")[-1].ToLower()
         }
 
         $kqltype = ('microsoft.' + $SplitDirectory[-3] + '/' + $SplitDirectory[-2])
-        $checkId = $kqlname.Split("/")[-1].ToLower()
 
         $queries += `
         [PSCustomObject]@{
@@ -611,28 +625,7 @@ function ConvertTo-WellArchitectedRecommendationsFromKQLPath
             type      = [string]$kqltype
         }
     }
-    
-    $ResourceResults = @()
-    foreach ($queryDef in $queries)
-    {
-        $checkId = $queryDef.checkId
-        $checkName = $queryDef.checkName
-        $query = $queryDef.query
-        $selector = $queryDef.selector
-        $type = $queryDef.type
 
-        Write-Host "++++++++++++++++++ " -NoNewline
-        if ($selector -eq 'APRL') 
-        {
-            Write-Host "[APRL]: Microsoft.$type - $checkId" -ForegroundColor Green -NoNewline
-        }
-        else 
-        {
-            Write-Host "[$selector]: $checkId" -ForegroundColor Green -NoNewline
-        }
-
-
-    }
-
+    return $queries
 }
 
