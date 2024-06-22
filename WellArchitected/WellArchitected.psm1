@@ -2,6 +2,7 @@
 
 # Comment based help needs to be added.
 # Many functions still require additional logic to be ported over.
+# Retirements, support cases, ect. still need to be re-added to core logic.
 
 function Connect-ToAzure 
 {
@@ -135,7 +136,12 @@ function Invoke-WellArchitectedKQLQuery
 
             while ($Looper -lt $Loop)
             {
-                $queryResults = Search-AzGraph -Query ($query + '| order by id') -Subscription $SubscriptionId -Skip $Limit -first 1000 -ErrorAction SilentlyContinue
+                $queryResults = Search-AzGraph -Query ($query + '| order by id') `
+                                               -Subscription $SubscriptionId `
+                                               -Skip $Limit `
+                                               -first 1000 `
+                                               -ErrorAction SilentlyContinue
+
                 foreach ($row in $queryResults)
                 {
                     $result = 
@@ -546,7 +552,8 @@ function Get-WellArchitectedRecommendationsByID
     {
         if ($ResourceGroups)
         {
-            $ResourceDetails = Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId -ResourceGroups $ResourceGroups
+            $ResourceDetails = Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId `
+                                                                -ResourceGroups $ResourceGroups
         }
         else 
         {
@@ -577,18 +584,36 @@ function Get-WellArchitectedRecommendationsByID
             {
                 Write-Verbose -Message "Query $checkId under development - Validate Recommendation manually"
                 $query = "resources | where type =~ '$type' | project name,id"
-                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
+                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId `
+                                                                         -ResourceDetails $ResourceDetails `
+                                                                         -type $type `
+                                                                         -query $query `
+                                                                         -checkId $checkId `
+                                                                         -checkName $checkName `
+                                                                         -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
             }
             elseif ($query -match "cannot-be-validated-with-arg")
             {
                 Write-Verbose -Message "IMPORTANT - Recommendation $checkId cannot be validated with ARGs - Validate Resources manually"
                 $query = "resources | where type =~ '$type' | project name,id"
-                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
+                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId `
+                                                                         -ResourceDetails $ResourceDetails `
+                                                                         -type $type `
+                                                                         -query $query `
+                                                                         -checkId $checkId `
+                                                                         -checkName $checkName `
+                                                                         -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
             }
             else
             {
                 Write-Verbose -Message "Invoking ARG Query for [CheckID:$checkid]"
-                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
+                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId `
+                                                                         -ResourceDetails $ResourceDetails `
+                                                                         -type $type `
+                                                                         -query $query `
+                                                                         -checkId $checkId `
+                                                                         -checkName $checkName `
+                                                                         -validationAction 'Azure Resource Graph'  
             }
         }
     }
@@ -668,3 +693,51 @@ function ConvertTo-WellArchitectedQueriesFromKQLPath
     return $queries
 }
 
+function Get-WellArchitectedRecommendationDefinitions
+{
+    [CmdletBinding()]
+    param 
+    (
+        [Parameter(Mandatory)]
+        [ValidateScript({Test-Path $_})]
+        [string]
+        $GitHubRepoPath,
+
+        [Parameter()]
+        [string[]]
+        $RecommendationIds
+    )
+    
+    Write-Debug -Message "Get-WellArchitectedRecommendationDefinitions: START [RecommendationIds:$RecommendationIds][GitHubRepoPath:$GitHubRepoPath]"
+    $LibraryPath = $GitHubRepoPath + '\Azure-Proactive-Resiliency-Library-v2'
+    
+    # Collect Services Definitions from corresponding YAML files
+    $ServicesYAML = @()
+    $ServicesYAML += Get-ChildItem -Path ($LibraryPath + '\azure-resources') -Filter "recommendations.yaml" -Recurse
+    $ServicesYAML += Get-ChildItem -Path ($LibraryPath + '\azure-specialized-workloads') -Filter "recommendations.yaml" -Recurse
+
+    $ServicesYAMLContent = @()
+    foreach ($YAML in $ServicesYAML)
+    {
+        if (-not [string]::IsNullOrEmpty($YAML))
+        {
+            $ServicesYAMLContent += Get-Content -Path $YAML | ConvertFrom-Yaml
+        }
+    }
+
+    # This should be optimized in future updates
+    $MatchedRecommendationCollection = @()
+    if ($RecommendationIds)
+    {
+        foreach ($RecommendationId in $RecommendationIds)
+        {
+            $MatchedRecommendationCollection += $ServicesYAMLContent | where {$_.aprlGuid -match $RecommendationId}
+        }
+
+        # Update collection with matched recommendations prior to returning
+        $ServicesYAMLContent = $MatchedRecommendationCollection
+    }
+
+    Write-Debug -Message "Get-WellArchitectedRecommendationDefinitions: END [RecommendationIds:$RecommendationIds][GitHubRepoPath:$GitHubRepoPath]"
+    return $ServicesYAMLContent
+}
