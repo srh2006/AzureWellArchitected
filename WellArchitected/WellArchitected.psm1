@@ -1,35 +1,43 @@
 #Requires -Modules Az.ResourceGraph,Az.Accounts
 
+# Comment based help needs to be added.
+# Many functions still require additional logic to be ported over.
+
+function Connect-ToAzure 
+{
+    param
+    (
+        [string]$TenantID,
+        [string[]]$SubscriptionIds,
+        [string]$AzureEnvironment = 'AzureCloud'
+    )
+
+    # Connect To Azure Tenant
+    If(-not (Get-AzContext))
+    {
+        Connect-AzAccount -Tenant $TenantID -WarningAction SilentlyContinue -Environment $AzureEnvironment
+    }
+}
+
 function Get-AzureSubscriptionsFromTenant 
 {
     [CmdletBinding()]
     param
     (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory)]
         [string]
-        $AzureEnvironment,
+        $TenantID,
 
-        [Parameter(Mandatory=$true)]
+        [Parameter()]
         [string]
-        $TenantID
+        $AzureEnvironment
     )
 
     # Connect To Azure Tenant
-    Write-Verbose "Authenticating to Azure"
-    if ($PSVersionTable.Platform -eq 'Win32NT')
-    {
-        Clear-AzContext -Force -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -InformationAction SilentlyContinue
-        Connect-AzAccount -Tenant $TenantID -WarningAction SilentlyContinue -Environment $AzureEnvironment
-        
-        $Subscriptions = Get-AzSubscription -TenantId $TenantID -WarningAction SilentlyContinue 
-    }
-    else
-    {
-        Connect-AzAccount -Tenant $TenantID -WarningAction SilentlyContinue -Environment $AzureEnvironment
-        $Subscriptions = Get-AzSubscription -WarningAction SilentlyContinue 
-    }
-
-    return $Subscriptions | Select TenantId,SubscriptionId,Name -Unique
+    Connect-ToAzure -TenantID $TenantID -AzureEnvironment $AzureEnvironment
+    $Subscriptions = Get-AzSubscription -TenantId $TenantID
+    
+    return $Subscriptions
 }
   
 function Test-Runbook 
@@ -186,6 +194,8 @@ function Invoke-WellArchitectedKQLQuery
 
 function Start-ResourceExtraction 
 {
+    # Most logic ported over to Get-WellArchitectedRecommendationsByID. Long term, all logic needs to be migrated and function to be renamed Get-WellArchitectedRecommendations
+    # New funciton will support by Recommendation ID or Resource Type - missing today.
     [CmdletBinding()]
     param 
     (
@@ -507,60 +517,89 @@ function Get-WellArchitectedRecommendationsByID
     )
 
     Write-Debug -Message "Get-WellArchitectedRecommendationsByID: START [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
+    $ShellPlatform = $PSVersionTable.Platform
+    Set-Location -path $GitHubRepoPath;
+
+    if ($ShellPlatform -eq 'Win32NT')
+    {
+        $AzureResourcePath =  "$GitHubRepoPath\Azure-Proactive-Resiliency-Library-v2\azure-resources\"
+        $SpecializedResourcePath = "$GitHubRepoPath\Azure-Proactive-Resiliency-Library-v2\azure-specialized-workloads\"
+    }
+    else
+    {
+        $AzureResourcePath =  "$GitHubRepoPath/Azure-Proactive-Resiliency-Library-v2/azure-resources/"
+        $SpecializedResourcePath = "$GitHubRepoPath/Azure-Proactive-Resiliency-Library-v2/azure-specialized-workloads/"
+    }
 
     $KQLCollection = @()
+    # Iterate through RecommendationIds and find corresponding KQL Files in Default Azure-Resources or Azure-Specialized-Workloads
     foreach ($RecommendationId in $RecommendationIds)
     {
-        $KQLCollection += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
+        $KQLCollection += Get-ChildItem -Path $AzureResourcePath -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
+        $KQLCollection += Get-ChildItem -Path $SpecializedResourcePath -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
     }
 
     $KQLQueries = ConvertTo-WellArchitectedQueriesFromKQLPath -KQLFileFullPaths $($KQLCollection.FullName)
     
     $RecommendationResults = @()
-    foreach ($queryDef in $KQLQueries)
+    foreach ($SubscriptionId in $SubscriptionIds)
     {
-        $checkId = $queryDef.checkId
-        $checkName = $queryDef.checkName
-        $query = $queryDef.query
-        $selector = $queryDef.selector
-        $type = $queryDef.type
-
-        if ($selector -eq 'APRL') 
+        if ($ResourceGroups)
         {
-            Write-Host "[APRL]: Microsoft.$type - $checkId" -ForegroundColor Green -NoNewline
+            $ResourceDetails = Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId -ResourceGroups $ResourceGroups
         }
         else 
         {
-            Write-Host "[$selector]: $checkId" -ForegroundColor Green -NoNewline
+            $ResourceDetails = Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId
         }
 
-        # Validating if Query is Under Development
-        if ($query -match "development")
+        foreach ($queryDef in $KQLQueries)
         {
-            Write-Host "Query $checkId under development - Validate Recommendation manually" -ForegroundColor Yellow
-            $query = "resources | where type =~ '$type' | project name,id"
-            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
-        }
-        elseif ($query -match "cannot-be-validated-with-arg")
-        {
-            Write-Host "IMPORTANT - Recommendation $checkId cannot be validated with ARGs - Validate Resources manually" -ForegroundColor Yellow
-            $query = "resources | where type =~ '$type' | project name,id"
-            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
-        }
-        else
-        {
-            Write-Debug -Message "Start-ResourceExtraction: Invoking Invoke-WellArchitectedKQLQuery - APRL Query"
-            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
+            $checkId = $queryDef.checkId
+            $checkName = $queryDef.checkName
+            $query = $queryDef.query
+            $selector = $queryDef.selector
+            $type = $queryDef.type
+
+            if ($selector -eq 'APRL') 
+            {
+                Write-Verbose -Message "[APRL]: Microsoft.$type - $checkId"
+            }
+            else 
+            {
+                Write-Verbose -Message "[$selector]: $checkId"
+            }
+
+            Write-Verbose -Message "Get-WellArchitectedRecommendationsByID: QueryDef Variables [CheckId:$checkId][checkName:$checkName][query:$query][type:$type]"
+
+            # Validating if Query is Under Development
+            if ($query -match "development")
+            {
+                Write-Verbose -Message "Query $checkId under development - Validate Recommendation manually"
+                $query = "resources | where type =~ '$type' | project name,id"
+                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
+            }
+            elseif ($query -match "cannot-be-validated-with-arg")
+            {
+                Write-Verbose -Message "IMPORTANT - Recommendation $checkId cannot be validated with ARGs - Validate Resources manually"
+                $query = "resources | where type =~ '$type' | project name,id"
+                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
+            }
+            else
+            {
+                Write-Verbose -Message "Invoking ARG Query for [CheckID:$checkid]"
+                $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
+            }
         }
     }
 
-    $RecommendationResults | 
-    
     Write-Debug -Message "Get-WellArchitectedRecommendationsByID: END [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
+    return $RecommendationResults
 }
 
 function Compare-WellArchitectedRecommendations
 {
+    # Empty function - Logic needed
     [CmdletBinding()]
     param 
     (
