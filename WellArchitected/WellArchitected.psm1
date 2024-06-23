@@ -78,6 +78,28 @@ function Test-Runbook
 
 function Invoke-WellArchitectedKQLQuery
 {
+    <#
+        .SYNOPSIS
+        Executes Well Architected KQL Query based on provided Azure Resource Details.
+        -- TODO: Reduce excess parameters and clean up output.
+
+        .DESCRIPTION
+        Requires READ access to provided Azure subscriptions.
+        Will EXECUTE corresponding Well Architected KQL queries against provided Azure Subscription.
+
+        .PARAMETER $SubscriptionIds
+        Specifies the Subscriptions to target with Well Architected Evaluation.
+
+        .INPUTS
+        All parameters are required.
+
+        .OUTPUTS
+        Returns KQL Query execution results as an object.
+
+        .EXAMPLE
+        --TODO Add example.
+    #>
+
     [CmdletBinding()]
     param
     (
@@ -93,6 +115,7 @@ function Invoke-WellArchitectedKQLQuery
         $checkName,
         [Parameter(Mandatory)]
         $validationAction,
+        [Parameter(Mandatory)]
         $ResourceDetails
     )
     
@@ -201,7 +224,7 @@ function Invoke-WellArchitectedKQLQuery
 function Start-ResourceExtraction 
 {
     # Most logic ported over to Get-WellArchitectedRecommendationsByID. Long term, all logic needs to be migrated and function to be renamed Get-WellArchitectedRecommendations
-    # New funciton will support by Recommendation ID or Resource Type - missing today.
+    # New funciton will support by Recommendation ID or Resource Type <- missing today.
     [CmdletBinding()]
     param 
     (
@@ -470,6 +493,31 @@ function Start-ResourceExtraction
 
 function Get-WellArchitectedResourceTypes
 {
+    <#
+        .SYNOPSIS
+        Gets the Azure Resource Types from the provided Subscription/Resource Groups.
+
+        .DESCRIPTION
+        Requires READ access to provided Azure subscriptions.
+        Will return all Azure Resource Types discovered in subscription regardless if there is Well Architected coverage for that type.
+
+        .PARAMETER $SubscriptionIds
+        Specifies the Subscriptions to target with Well Architected Evaluation.
+
+        .PARAMETER ResourceGroups
+        OPTIONAL: Allows the user to provide resource groups to filter shared subscriptions down to specific resources.
+
+        .INPUTS
+        SubscriptionIds and RecommendationIDs are required.
+        They are passed a string arrays.
+
+        .OUTPUTS
+        Returns Azure Resource Types from provided subscription.
+
+        .EXAMPLE
+        --TODO Add example.
+    #>
+
     [CmdletBinding()]
     param 
     (
@@ -501,6 +549,39 @@ function Get-WellArchitectedResourceTypes
 
 function Get-WellArchitectedRecommendationsByID
 {
+     <#
+        .SYNOPSIS
+        Gets Well Architected Recommendations for Azure provided Azure Subscription/ResourceGroups.
+
+        .DESCRIPTION
+        Requires READ access to provided Azure subscriptions.
+        Will evaluate Azure and return recommendations for remediation.
+
+        .PARAMETER $SubscriptionIds
+        Specifies the Subscriptions to target with Well Architected Evaluation.
+
+        .PARAMETER RecommendationIDs
+        Specifies the RecommendationIDs you would like to filter on.
+        This will return only recommendations that match your provided RecommendationIDs.
+        --TODO: Parameter should be made optional and function needs to be able to pull all recommendations by Type.
+
+        .PARAMETER GitHubRepoPath
+        Specifies the GitHub Repo FilePath where the Recommedation.YAML files are stored.
+        -- TODO: Dependency on the local GitHub Repo should be removed in the future.
+
+        .PARAMETER ResourceGroups
+        OPTIONAL: Allows the user to provide resource groups to filter shared subscriptions down to specific resources.
+
+        .INPUTS
+        SubscriptionIds, RecommendationIDs, GitHubRepoPath are all required.
+
+        .OUTPUTS
+        Returns Well Architected Recommendations based on Azure Subscription provided.
+
+        .EXAMPLE
+        --TODO Add example.
+    #>
+
     [CmdletBinding()]
     param 
     (
@@ -638,6 +719,25 @@ function Compare-WellArchitectedRecommendations
 
 function ConvertTo-WellArchitectedQueriesFromKQLPath
 {
+    <#
+        .SYNOPSIS
+        Converts Well Architected KQL Queries to Objects from GitHub Repo File Paths to .KQL files.
+
+        .DESCRIPTION
+        All KQL Queries are stored within the Azure Resiliency Git Hub Repo and can be read/returned as objects using this function.
+
+        .PARAMETER KQLFileFullPaths
+        Specifies the GitHub Repo FilePath where the .KQL files are stored that need to be converted to Objects.
+        "C:\Users\Username\Documents\GitHub\Azure-Proactive-Resiliency-Library-v2\azure-resources\Storage\storageAccounts\kql\1b965cb9-7629-214e-b682-6bf6e450a100.kql"
+
+        .INPUTS
+        KQL Full File Paths are the only required Input Paramter
+        EXAMPLE:"C:\Users\Username\Documents\GitHub\Azure-Proactive-Resiliency-Library-v2\azure-resources\Storage\storageAccounts\kql\1b965cb9-7629-214e-b682-6bf6e450a100.kql"
+
+        .OUTPUTS
+        Returns Well Architected Queries as an Object
+    #>
+
     [CmdletBinding()]
     param 
     (
@@ -649,7 +749,6 @@ function ConvertTo-WellArchitectedQueriesFromKQLPath
     $queries = @()
     $ShellPlatform = $PSVersionTable.Platform
     
-    # Populates the QueryMap hashtable
     foreach ($KQLFileFullPath in $KQLFileFullPaths)
     {
         if ($ShellPlatform -eq 'Win32NT')
@@ -695,6 +794,49 @@ function ConvertTo-WellArchitectedQueriesFromKQLPath
 
 function Get-WellArchitectedRecommendationDefinitions
 {
+    <#
+        .SYNOPSIS
+        Gets Well Architected Recommendations from local Azure Resiliency GitHub Repo.
+
+        .DESCRIPTION
+        All recommendation definitions are stored as YAML and returned as an object once returned by this Cmdlet.
+
+        .PARAMETER GitHubRepoPath
+        Specifies the GitHub Repo FilePath where the Recommedation.YAML files are stored.
+        -- TODO: Dependency on the local GitHub Repo should be removed in the future.
+
+        .PARAMETER RecommendationIDs
+        OPTIONAL: Specifies the RecommendationIDs you would like to filter on.
+        This will return only recommendations that match your provided RecommendationIDs.
+
+        .INPUTS
+        GitHub Repo FilePath is the only required Paramter
+
+        .OUTPUTS
+        Returns Well Architected Recommendations as an Object
+
+        .EXAMPLE
+        PS> Get-WellArchitectedRecommendationDefinitions -GitHubRepoPath $GitHubRepoPath -RecommendationIds 'e5f5fcea-f925-4578-8599-9a391e888a60'
+
+        Name                           Value
+        ----                           -----
+        recommendationControl          Monitoring and Alerting
+        pgVerified                     True
+        recommendationResourceType     Microsoft.Network/loadBalancers
+        longDescription                Health probes are used by Azure Load Balancers to determine the status of backend endpoints. Using custom health probes that are aligned with vendor recommen… 
+        publishedToAdvisor             False
+        description                    Use Health Probes to detect backend instances availability
+        aprlGuid                       e5f5fcea-f925-4578-8599-9a391e888a60
+        recommendationMetadataState    Active
+        tags
+        potentialBenefits              Ensures backend uptime monitoring.
+        automationAvailable            arg
+        recommendationImpact           High
+        publishedToLearn               False
+        recommendationTypeId
+        learnMoreLink                  {Load Balancer Health Probe Overview}
+    #>
+
     [CmdletBinding()]
     param 
     (
