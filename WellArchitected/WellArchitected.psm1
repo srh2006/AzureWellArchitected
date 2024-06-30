@@ -40,41 +40,6 @@ function Get-AzureSubscriptionsFromTenant
     
     return $Subscriptions
 }
-  
-function Test-Runbook 
-{
-    # Function is unused until purpose is determined.
-
-    # Checks if a runbook file was provided and, if so, loads selectors and checks hashtables
-    if (![string]::IsNullOrEmpty($RunbookFile)) {
-
-      Write-Host "A runbook has been configured. Only checks configured in the runbook will be run."
-
-      # Check that the runbook file actually exists
-      if (Test-Path $RunbookFile -PathType Leaf) {
-
-        # Try to load runbook JSON
-        $RunbookJson = Get-Content -Raw $RunbookFile | ConvertFrom-Json
-
-        # Try to load selectors
-        $RunbookJson.selectors.PSObject.Properties | ForEach-Object {
-          $Script:RunbookSelectors[$_.Name.ToLower()] = $_.Value
-        }
-
-        # Try to load checks
-        $RunbookJson.checks.PSObject.Properties | ForEach-Object {
-          $Script:RunbookChecks[$_.Name.ToLower()] = $_.Value
-        }
-
-        # Try to load query overrides
-        $RunbookJson.query_overrides | ForEach-Object {
-          $Script:RunbookQueryOverrides += [string]$_
-        }
-      }
-
-      Write-Host "The provided runbook includes $($Script:RunbookChecks.Count.ToString()) check(s). Only checks configured in the runbook will be run."
-    }
-}
 
 function Invoke-WellArchitectedKQLQuery
 {
@@ -221,276 +186,6 @@ function Invoke-WellArchitectedKQLQuery
     return $QueryResultsCollection
 }
 
-function Start-ResourceExtraction 
-{
-    # Most logic ported over to Get-WellArchitectedRecommendationsByID. Long term, all logic needs to be migrated and function to be renamed Get-WellArchitectedRecommendations
-    # New funciton will support by Recommendation ID or Resource Type <- missing today.
-    [CmdletBinding()]
-    param 
-    (
-        [Parameter(Mandatory)]
-        [string[]]$SubscriptionIds,
-        [Parameter(Mandatory)]
-        [ValidateScript({$_ -match 'GitHub'})]
-        [ValidateScript({Test-Path -Path $_})]
-        [string]$GitHubRepoPath,
-        [string[]]$ResourceGroups,
-        [switch]$ExcludeNonARGValidated
-    )
-
-    $ShellPlatform = $PSVersionTable.Platform
-
-    # Set the variables used in the loop
-    foreach ($SubscriptionId in $SubscriptionIds)
-    {
-        # Get-AzSubscription can return junk in the first index. Continue onto the next index if so.
-        if (-not $SubscriptionId)
-        {
-            Continue;
-        }
-
-        Set-AzContext -Subscription $SubscriptionId -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
-
-        if ([string]::IsNullOrEmpty($ResourceGroups))
-        {
-            $ResourceDetails = Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId
-        }
-        else 
-        {
-            $ResourceDetails = Get-WellArchitectedResourceTypes -SubscriptionID $SubscriptionId -ResourceGroups $ResourceGroups
-        }
-
-        # Create the arrays used to store the kusto queries
-        $kqlQueryMap = @{}
-        $aprlKqlFiles = @()
-        $ServiceNotAvailable = @()
-
-        Set-Location -path $GitHubRepoPath;
-        if ($ShellPlatform -eq 'Win32NT')
-        {
-            $clonePath = "$GitHubRepoPath\Azure-Proactive-Resiliency-Library-v2"
-            $RootTypes = Get-ChildItem -Path "$clonePath\azure-resources\" -Directory
-        }
-        else
-        {
-            $clonePath = "$GitHubRepoPath/Azure-Proactive-Resiliency-Library-v2"
-            $RootTypes = Get-ChildItem -Path "$clonePath/azure-resources/" -Directory
-        }
-
-        Set-Location -path $clonePath
-        $GluedTypes = @()
-        foreach ($RootType in $RootTypes)
-        {
-            $RootName = $RootType.Name
-            $SubTypes = Get-ChildItem -Path $RootType -Directory
-            foreach ($SubDir in $SubTypes)
-            {
-                $SubDirName = $SubDir.Name
-                if (Get-ChildItem -Path $SubDir.FullName -File 'recommendations.yaml')
-                {
-                    if ($ShellPlatform -eq 'Win32NT')
-                    {
-                        $GluedTypes += (('Microsoft.' + $RootName + '/' + $SubDirName)).ToLower()
-                    }
-                    else 
-                    {
-                        $GluedTypes += (('Microsoft.' + $RootName + '\' + $SubDirName)).ToLower()
-                    }
-                }
-            }
-        }
-
-        foreach ($Type in $ResourceDetails.type)
-        {
-            if ($Type.ToLower() -in $GluedTypes)
-            {
-                $Type = $Type.replace('microsoft.', '')
-                $Provider = $Type.split('/')[0]
-                $ResourceType = $Type.split('/')[1]
-
-                if ($ShellPlatform -eq 'Win32NT')
-                {
-                    $Path = ($clonePath + '\azure-resources\' + $Provider + '\' + $ResourceType)
-                    $aprlKqlFiles += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse
-                }
-                else
-                {
-                    $Path = ($clonePath + '/azure-resources/')
-                    $ProvPath = ($Provider + '/' + $ResourceType)
-                    $aprlKqlFiles += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse | Where-Object {$_.FullName -like "*$ProvPath*"}
-                }
-            }
-            else
-            {
-                $ServiceNotAvailable += $Type
-            }
-        }
-
-        # Checks if specialized workloads will be validated
-        if ($SAP.IsPresent)
-        {
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '\azure-specialized-workloads\sap') -Filter "*.kql" -Recurse
-            }
-            else
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '/azure-specialized-workloads/sap') -Filter "*.kql" -Recurse
-            }
-        }
-
-        if ($AVD.IsPresent)
-        {
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '\azure-specialized-workloads\avd') -Filter "*.kql" -Recurse
-            }
-            else
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '/azure-specialized-workloads/avd') -Filter "*.kql" -Recurse
-            }
-        }
-
-        if ($AVS.IsPresent)
-        {
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '\azure-specialized-workloads\avs') -Filter "*.kql" -Recurse
-            }
-            else
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '/azure-specialized-workloads/avs') -Filter "*.kql" -Recurse
-            }
-        }
-
-        if ($HPC.IsPresent)
-        {
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '\azure-specialized-workloads\hpc') -Filter "*.kql" -Recurse
-            }
-            else
-            {
-                $aprlKqlFiles += Get-ChildItem -Path ($clonePath+ '/azure-specialized-workloads/hpc') -Filter "*.kql" -Recurse
-            }
-        }
-
-        # Populates the QueryMap hashtable
-        foreach ($aprlKqlFile in $aprlKqlFiles)
-        {
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $kqlShort = [string]$aprlKqlFile.FullName.split('\')[-1]
-            }
-            else
-            {
-                $kqlShort = [string]$aprlKqlFile.FullName.split('/')[-1]
-            }
-
-            $kqlName = $kqlShort.split('.')[0]
-
-            # Create APRL query map based on recommendation
-            $kqlQueryMap[$kqlName] = $aprlKqlFile
-        }
-
-        $kqlFiles = $kqlQueryMap.Values
-        $queries = @()
-
-        # Loop through each KQL file and execute the queries
-        foreach ($kqlFile in $kqlFiles)
-        {
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $kqlshort = [string]$kqlFile.FullName.split('\')[-1]
-            }
-            else
-            {
-                $kqlshort = [string]$kqlFile.FullName.split('/')[-1]
-            }
-
-            $kqlname = $kqlshort.split('.')[0]
-
-            # Read the query content from the file
-            $baseQuery = Get-Content -Path $kqlFile.FullName | Out-String
-            if ($ShellPlatform -eq 'Win32NT')
-            {
-                $typeRaw = $kqlFile.DirectoryName.split('\')
-            }
-            else
-            {
-                $typeRaw = $kqlFile.DirectoryName.split('/')
-            }
-
-            $kqltype = ('microsoft.' + $typeRaw[-3] + '/' + $typeRaw[-2])
-            $checkId = $kqlname.Split("/")[-1].ToLower()
-
-            $queries += `
-            [PSCustomObject]@{
-                checkId   = [string]$checkId
-                checkName = [string]$null
-                selector  = "APRL"
-                query     = [string]$baseQuery
-                type      = [string]$kqltype
-                
-            }
-        }
-
-        $ResourceResults = @()
-
-        foreach ($queryDef in $queries)
-        {
-            $checkId = $queryDef.checkId
-            $checkName = $queryDef.checkName
-            $query = $queryDef.query
-            $selector = $queryDef.selector
-            $type = $queryDef.type
-
-            if ($selector -eq 'APRL') 
-            {
-                Write-Host "[APRL]: Microsoft.$type - $checkId" -ForegroundColor Green -NoNewline
-            }
-            else 
-            {
-                Write-Host "[$selector]: $checkId" -ForegroundColor Green -NoNewline
-            }
-
-            # Validating if Query is Under Development
-            if ($query -match "development")
-            {
-                Write-Host "Query $checkId under development - Validate Recommendation manually" -ForegroundColor Yellow
-                $query = "resources | where type =~ '$type' | project name,id"
-                $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Query under development - Validate Recommendation manually'
-            }
-            elseif ($query -match "cannot-be-validated-with-arg")
-            {
-                Write-Host "IMPORTANT - Recommendation $checkId cannot be validated with ARGs - Validate Resources manually" -ForegroundColor Yellow
-                $query = "resources | where type =~ '$type' | project name,id"
-                $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'IMPORTANT - Recommendation cannot be validated with ARGs - Validate Resources manually'
-            }
-            else
-            {
-                Write-Debug -Message "Start-ResourceExtraction: Invoking Invoke-WellArchitectedKQLQuery - APRL Query"
-                $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $checkId -checkName $checkName -validationAction 'Azure Resource Graph'  
-            }
-        }
-
-        #Store all resourcetypes not in APRL
-        foreach ($type in $ServiceNotAvailable)
-        {
-            Write-Host "Type $type Not Available In APRL - Validate Service manually" -ForegroundColor Yellow
-            $query = "resources | where type =~ '$type' | project name,id"
-            $ResourceResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $type -checkName '' -validationAction 'IMPORTANT - Service Not Available In APRL - Validate Service manually if Applicable, if not Delete this line'
-        }
-    }
-    
-    if ($ExcludeNonARGValidated)
-    {
-        $ResourceResults = $ResourceResults | where {$_.ValidationAction -notmatch 'IMPORTANT'}
-    }
-
-    return $ResourceResults
-}
-
 function Get-WellArchitectedResourceTypes
 {
     <#
@@ -547,11 +242,12 @@ function Get-WellArchitectedResourceTypes
     return $resultAllResourceTypes
 }
 
-function Get-WellArchitectedRecommendationsByID
+function Get-WellArchitectedRecommendations
 {
      <#
         .SYNOPSIS
         Gets Well Architected Recommendations for Azure provided Azure Subscription/ResourceGroups.
+        Default behavior returns Recommendations by Resource Types of Azure Subscription.
 
         .DESCRIPTION
         Requires READ access to provided Azure subscriptions.
@@ -563,7 +259,7 @@ function Get-WellArchitectedRecommendationsByID
         .PARAMETER RecommendationIDs
         Specifies the RecommendationIDs you would like to filter on.
         This will return only recommendations that match your provided RecommendationIDs.
-        --TODO: Parameter should be made optional and function needs to be able to pull all recommendations by Type.
+        If not provided, it will return recommendations by Resource Type
 
         .PARAMETER GitHubRepoPath
         Specifies the GitHub Repo FilePath where the Recommedation.YAML files are stored.
@@ -579,16 +275,29 @@ function Get-WellArchitectedRecommendationsByID
         Returns Well Architected Recommendations based on Azure Subscription provided.
 
         .EXAMPLE
-        --TODO Add example.
+        PS > Get-WellArchitectedRecommendations -SubscriptionIds $subscriptionId -GitHubRepoPath $githubRepoPath | Select -first 1
+
+        validationAction       : Azure Resource Graph
+        recommendationId       : 1549b91f-2ea0-4d4f-ba2a-4596becbe3de
+        name                   : DefaultBackupVault-southcentralus
+        id                     : /subscriptions/7d154fd1-2e97-4a32-a079-c2b72fc3aeb2/resourceGroups/DefaultResourceGroup-SCUS/providers/Microsoft.RecoveryServices/vaults/DefaultBackupVault-southcen 
+                                tralus
+        param1                 : CrossRegionRestore: Disabled
+        param2                 : StorageReplicationType: GeoRedundant
+        param3                 : 
+        param4                 : 
+        param5                 : 
+        checkName              : 
+        selector               : APRL
+        Description            : Enable Cross Region Restore for your GRS Recovery Services Vault
+        RecommendationCategory : Disaster Recovery
+        LearnMoreLink          : {Set Cross Region Restore, Azure Backup Best Practices, Minimum Role Requirements for Cross Region Restore, Recovery Services Vault}
+        Priority               : Medium
     #>
 
     [CmdletBinding()]
     param 
     (
-        [Parameter(Mandatory)]
-        [string[]]
-        $RecommendationIds,
-
         [Parameter(Mandatory)]
         [string[]]
         $SubscriptionIds,
@@ -600,10 +309,18 @@ function Get-WellArchitectedRecommendationsByID
 
         [Parameter()]
         [string[]]
-        $ResourceGroups
+        $RecommendationIds,
+
+        [Parameter()]
+        [string[]]
+        $ResourceGroups,
+
+        [Parameter()]
+        [ValidateSet('avd','avs','sap','hpc')]
+        [string[]]$SpecialIzedWorkloads
     )
 
-    Write-Debug -Message "Get-WellArchitectedRecommendationsByID: START [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
+    Write-Debug -Message "Get-WellArchitectedRecommendations: START [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
     $ShellPlatform = $PSVersionTable.Platform
     Set-Location -path $GitHubRepoPath;
 
@@ -619,11 +336,91 @@ function Get-WellArchitectedRecommendationsByID
     }
 
     $KQLCollection = @()
-    # Iterate through RecommendationIds and find corresponding KQL Files in Default Azure-Resources or Azure-Specialized-Workloads
-    foreach ($RecommendationId in $RecommendationIds)
+
+    # If RecommendationIds has been provided, search for KQL based on it.
+    if ($RecommendationIds)
     {
-        $KQLCollection += Get-ChildItem -Path $AzureResourcePath -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
-        $KQLCollection += Get-ChildItem -Path $SpecializedResourcePath -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
+        # Iterate through RecommendationIds and find corresponding KQL Files in Default Azure-Resources or Azure-Specialized-Workloads
+        foreach ($RecommendationId in $RecommendationIds)
+        {
+            $KQLCollection += Get-ChildItem -Path $AzureResourcePath -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
+            $KQLCollection += Get-ChildItem -Path $SpecializedResourcePath -Filter "*.kql" -Recurse | where {$_.Name -match $RecommendationId}
+        }
+    }
+    else 
+    {
+        # Grab KQLs by resource Type if recommendation Ids not provided.
+        Set-Location -path $GitHubRepoPath;
+        if ($ShellPlatform -eq 'Win32NT')
+        {
+            $clonePath = "$GitHubRepoPath\Azure-Proactive-Resiliency-Library-v2"
+            $RootTypes = Get-ChildItem -Path "$clonePath\azure-resources\" -Directory
+        }
+        else
+        {
+            $clonePath = "$GitHubRepoPath/Azure-Proactive-Resiliency-Library-v2"
+            $RootTypes = Get-ChildItem -Path "$clonePath/azure-resources/" -Directory
+        }
+
+        Set-Location -path $clonePath
+        $GluedTypes = @()
+        foreach ($RootType in $RootTypes)
+        {
+            $RootName = $RootType.Name
+            $SubTypes = Get-ChildItem -Path $RootType -Directory
+            foreach ($SubDir in $SubTypes)
+            {
+                $SubDirName = $SubDir.Name
+                if (Get-ChildItem -Path $SubDir.FullName -File 'recommendations.yaml')
+                {
+                    if ($ShellPlatform -eq 'Win32NT')
+                    {
+                        $GluedTypes += (('Microsoft.' + $RootName + '/' + $SubDirName)).ToLower()
+                    }
+                    else 
+                    {
+                        $GluedTypes += (('Microsoft.' + $RootName + '\' + $SubDirName)).ToLower()
+                    }
+                }
+            }
+        }
+
+        $ServiceNotAvailable = @()
+        foreach ($Type in $ResourceDetails.type)
+        {
+            if ($Type.ToLower() -in $GluedTypes)
+            {
+                $Type = $Type.replace('microsoft.', '')
+                $Provider = $Type.split('/')[0]
+                $ResourceType = $Type.split('/')[1]
+
+                if ($ShellPlatform -eq 'Win32NT')
+                {
+                    $Path = ($clonePath + '\azure-resources\' + $Provider + '\' + $ResourceType)
+                    $aprlKqlFiles += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse
+                }
+                else
+                {
+                    $Path = ($clonePath + '/azure-resources/')
+                    $ProvPath = ($Provider + '/' + $ResourceType)
+                    $aprlKqlFiles += Get-ChildItem -Path $Path -Filter "*.kql" -Recurse | Where-Object {$_.FullName -like "*$ProvPath*"}
+                }
+            }
+            else
+            {
+                $ServiceNotAvailable += $Type
+            }
+        }
+
+        if ($SpecializedWorkloads)
+        {
+            foreach ($Workload in $SpecializedWorkloads)
+            {
+                $aprlKqlFiles += Get-ChildItem -Path ($SpecializedResourcePath  + $Workload) -Filter "*.kql" -Recurse
+            }
+        }
+
+        $KQLCollection = $aprlKqlFiles
     }
 
     $KQLQueries = ConvertTo-WellArchitectedQueriesFromKQLPath -KQLFileFullPaths $($KQLCollection.FullName)
@@ -697,10 +494,45 @@ function Get-WellArchitectedRecommendationsByID
                                                                          -validationAction 'Azure Resource Graph'  
             }
         }
+
+        #Store all resourcetypes not in APRL
+        foreach ($type in $ServiceNotAvailable)
+        {
+            Write-Host "Type $type Not Available In APRL - Validate Service manually" -ForegroundColor Yellow
+            $query = "resources | where type =~ '$type' | project name,id"
+            $RecommendationResults += Invoke-WellArchitectedKQLQuery -SubscriptionId $SubscriptionId -ResourceDetails $ResourceDetails -type $type -query $query -checkId $type -checkName '' -validationAction 'IMPORTANT - Service Not Available In APRL - Validate Service manually if Applicable, if not Delete this line'
+        }
     }
 
-    Write-Debug -Message "Get-WellArchitectedRecommendationsByID: END [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
-    return $RecommendationResults
+    # Grab the Well Architected Definitions and assign them to the Results Set
+    if (-not $RecommendationIds)
+    {
+        $RecommendationIds = $RecommendationResults | Select -ExpandProperty RecommendationId -Unique
+    }
+
+    $Definitions = Get-WellArchitectedRecommendationDefinitions -GitHubRepoPath $GitHubRepoPath -RecommendationIds $RecommendationIds
+    Write-Debug -Message "Get-WellArchitectedRecommendations: Definition Count: $($Definitions.Count)"
+    Write-Debug -Message "Get-WellArchitectedRecommendations: Recommendation Results:$($RecommendationResults.Count)"
+
+    $FullRecommendationCollection = @()
+    foreach ($RecommendationResult in $RecommendationResults)
+    {
+        $FullRecommendation = $RecommendationResult | Select *,Description,RecommendationCategory,LearnMoreLink,Priority
+
+        $DefinitionMatch = $Definitions | where {$_.aprlGuid -match $RecommendationResult.RecommendationId}
+        if ($DefinitionMatch)
+        {
+            $FullRecommendation.Description = $DefinitionMatch.description
+            $FullRecommendation.RecommendationCategory = $DefinitionMatch.recommendationControl
+            $FullRecommendation.LearnMoreLink = $DefinitionMatch.learnMoreLink
+            $FullRecommendation.Priority = $DefinitionMatch.recommendationImpact
+        }
+            
+        $FullRecommendationCollection += $FullRecommendation
+    }
+
+    Write-Debug -Message "Get-WellArchitectedRecommendations: END [RecommendationIds:$RecommendationIds][SubscriptionIds:$SubscriptionIds][ResourceGroups:$ResourceGroups]"
+    return $FullRecommendationCollection
 }
 
 function Compare-WellArchitectedRecommendations
@@ -816,25 +648,25 @@ function Get-WellArchitectedRecommendationDefinitions
         Returns Well Architected Recommendations as an Object
 
         .EXAMPLE
-        PS> Get-WellArchitectedRecommendationDefinitions -GitHubRepoPath $GitHubRepoPath -RecommendationIds 'e5f5fcea-f925-4578-8599-9a391e888a60'
+        PS> Get-WellArchitectedRecommendationDefinitions -GitHubRepoPath $GitHubRepoPath -RecommendationIds $recommendationid              
 
-        Name                           Value
-        ----                           -----
-        recommendationControl          Monitoring and Alerting
-        pgVerified                     True
-        recommendationResourceType     Microsoft.Network/loadBalancers
-        longDescription                Health probes are used by Azure Load Balancers to determine the status of backend endpoints. Using custom health probes that are aligned with vendor recommen… 
-        publishedToAdvisor             False
-        description                    Use Health Probes to detect backend instances availability
-        aprlGuid                       e5f5fcea-f925-4578-8599-9a391e888a60
-        recommendationMetadataState    Active
-        tags
-        potentialBenefits              Ensures backend uptime monitoring.
-        automationAvailable            arg
-        recommendationImpact           High
-        publishedToLearn               False
-        recommendationTypeId
-        learnMoreLink                  {Load Balancer Health Probe Overview}
+        publishedToLearn            : False
+        recommendationMetadataState : Active
+        potentialBenefits           : Ensures backend uptime monitoring.
+        recommendationResourceType  : Microsoft.Network/loadBalancers
+        publishedToAdvisor          : False
+        description                 : Use Health Probes to detect backend instances availability
+        recommendationControl       : Monitoring and Alerting
+        longDescription             : Health probes are used by Azure Load Balancers to determine the status of backend endpoints. Using custom health probes that are aligned with vendor
+                                    recommendations enhances understanding of backend availability and facilitates monitoring of backend services for any impact.
+
+        tags                        : 
+        automationAvailable         : arg
+        recommendationImpact        : High
+        learnMoreLink               : {Load Balancer Health Probe Overview}
+        recommendationTypeId        : 
+        pgVerified                  : True
+        aprlGuid                    : e5f5fcea-f925-4578-8599-9a391e888a60
     #>
 
     [CmdletBinding()]
@@ -881,5 +713,37 @@ function Get-WellArchitectedRecommendationDefinitions
     }
 
     Write-Debug -Message "Get-WellArchitectedRecommendationDefinitions: END [RecommendationIds:$RecommendationIds][GitHubRepoPath:$GitHubRepoPath]"
-    return $ServicesYAMLContent
+    return ($ServicesYAMLContent | ConvertFrom-HashTableToObject)
+}
+
+function ConvertFrom-HashTableToObject
+{
+    [CmdletBinding()]
+    Param
+    (
+        [Parameter(Mandatory,ValueFromPipeline)]
+        [hashtable]$HashTable
+    )
+
+    begin
+    {
+        $ReturnObject = @()
+    }
+    process
+    {
+        $HashTable | ForEach-Object `
+        {
+            $Result = New-Object psobject;
+            foreach ($key in $_.keys) 
+            {
+                $Result | Add-Member -MemberType NoteProperty -Name $key -Value $_[$key]
+            }
+
+            $ReturnObject += $Result;
+        }
+    }
+    end
+    {
+        return $ReturnObject
+    }
 }
